@@ -58,16 +58,36 @@ class CoralGemma3NPURunner:
         )
 
         # 4. Instantiate Gemma3Static (which binds to Torq NPU and manages KV cache tensors)
-        self._engine = Gemma3Static(
-            model_path=str(self.vmfb_path),
-            max_seq_len=self.max_seq_len,
-            n_threads=self.n_threads,
-            instruct_model=True,
-            temperature=temperature,
-            top_p=top_p,
-            runtime_flags=["--torq_device_allocator=system"],
-            lm_head_path=lm_head_path,
-        )
+        allocator = os.getenv("TORQ_DEVICE_ALLOCATOR", "dmabuf")
+        try:
+            self._engine = Gemma3Static(
+                model_path=str(self.vmfb_path),
+                max_seq_len=self.max_seq_len,
+                n_threads=self.n_threads,
+                instruct_model=True,
+                temperature=temperature,
+                top_p=top_p,
+                runtime_flags=[f"--torq_device_allocator={allocator}"],
+                lm_head_path=lm_head_path,
+            )
+        except Exception as exc:
+            if allocator == "dmabuf" and "allocator" in str(exc).lower():
+                logger.warning(
+                    "Initialization with --torq_device_allocator=dmabuf failed (%s). Retrying with 'cpu'...",
+                    exc,
+                )
+                self._engine = Gemma3Static(
+                    model_path=str(self.vmfb_path),
+                    max_seq_len=self.max_seq_len,
+                    n_threads=self.n_threads,
+                    instruct_model=True,
+                    temperature=temperature,
+                    top_p=top_p,
+                    runtime_flags=["--torq_device_allocator=cpu"],
+                    lm_head_path=lm_head_path,
+                )
+            else:
+                raise
         logger.info("Successfully initialized Gemma 3 on Torq Coral NPU!")
 
     def _find_vmfb_file(self, directory: Path) -> Path:
