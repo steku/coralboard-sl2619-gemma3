@@ -1,7 +1,8 @@
 """Hardware verification and clock control for the Synaptics Torq Coral NPU.
 
 This module ensures that the Coralboard SL2619 Torq Coral NPU hardware
-(/sys/class/devfreq/f7600000.synpu) is detected, active, and clocked at maximum
+(/sys/class/devfreq/f7600000.synpu) is detected, its hardware clock is un-gated
+via the clock control register (0xf7e104b0 = 0x216), and clocked at maximum
 frequency for pure NPU inference.
 
 CPU execution is strictly prohibited.
@@ -10,6 +11,10 @@ CPU execution is strictly prohibited.
 from __future__ import annotations
 
 import logging
+import mmap
+import os
+import struct
+import subprocess
 from pathlib import Path
 
 logger = logging.getLogger("coral-npu-control")
@@ -19,6 +24,10 @@ NPU_GOVERNOR_PATH = NPU_DEVFREQ_PATH / "governor"
 NPU_SET_FREQ_PATH = NPU_DEVFREQ_PATH / "userspace" / "set_freq"
 NPU_MAX_FREQ_PATH = NPU_DEVFREQ_PATH / "max_freq"
 NPU_CUR_FREQ_PATH = NPU_DEVFREQ_PATH / "cur_freq"
+
+# Physical address of the Torq Coral NPU clock gate register on Astra SL2619
+NPU_CLK_REG_ADDR = 0xF7E104B0
+NPU_CLK_ENABLE_VAL = 0x216
 
 
 def verify_npu_hardware() -> None:
@@ -40,9 +49,59 @@ def verify_npu_hardware() -> None:
     logger.info("Verified Coralboard Torq Coral NPU hardware: %s", NPU_DEVFREQ_PATH)
 
 
+def enable_npu_clock() -> tuple[bool, str]:
+    """Un-gates the Torq NPU clock register (0xf7e104b0 = 0x216) to allow XRAM writes."""
+    # 1. Try devmem utility
+    try:
+        res = subprocess.run(
+            ["devmem", f"0x{NPU_CLK_REG_ADDR:x}", "32", f"0x{NPU_CLK_ENABLE_VAL:x}"],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        if res.returncode == 0:
+            logger.info(
+                "NPU clock enabled via devmem (0x%x = 0x%x)",
+                NPU_CLK_REG_ADDR,
+                NPU_CLK_ENABLE_VAL,
+            )
+            return True, "NPU clock enabled via devmem"
+    except FileNotFoundError:
+        logger.debug("devmem command not found in PATH, trying direct /dev/mem...")
+    except Exception as exc:
+        logger.debug("devmem failed: %s, trying direct /dev/mem...", exc)
+
+    # 2. Fallback: Direct memory map via /dev/mem
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        page_addr = NPU_CLK_REG_ADDR & ~(page_size - 1)
+        offset_in_page = NPU_CLK_REG_ADDR - page_addr
+
+        with open("/dev/mem", "r+b", buffering=0) as f:
+            with mmap.mmap(f.fileno(), page_size, offset=page_addr) as mm:
+                mm.seek(offset_in_page)
+                mm.write(struct.pack("<I", NPU_CLK_ENABLE_VAL))
+                mm.flush()
+        logger.info(
+            "NPU clock enabled via /dev/mem mmap (0x%x = 0x%x)",
+            NPU_CLK_REG_ADDR,
+            NPU_CLK_ENABLE_VAL,
+        )
+        return True, "NPU clock enabled via /dev/mem"
+    except PermissionError:
+        msg = "Permission denied opening /dev/mem. Must run as root to un-gate NPU clock."
+        logger.warning(msg)
+        return False, msg
+    except Exception as exc:
+        msg = f"NPU clock register setup failed: {exc}"
+        logger.warning(msg)
+        return False, msg
+
+
 def configure_npu_max_frequency() -> bool:
     """Sets the Torq NPU to its maximum clock speed using the userspace governor."""
     verify_npu_hardware()
+    enable_npu_clock()
 
     try:
         if NPU_GOVERNOR_PATH.exists():
@@ -70,8 +129,14 @@ def configure_npu_max_frequency() -> bool:
     return True
 
 
+def setup_npu_for_inference() -> None:
+    """Complete pre-flight hardware setup for Coral NPU inference."""
+    verify_npu_hardware()
+    enable_npu_clock()
+    configure_npu_max_frequency()
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    verify_npu_hardware()
-    configure_npu_max_frequency()
+    setup_npu_for_inference()
     print("Coralboard NPU verification and clock setup passed.")

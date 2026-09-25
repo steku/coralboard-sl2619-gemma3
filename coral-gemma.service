@@ -15,8 +15,9 @@ ExecStart=/home/root/coralboard-sl2619-gemma3/.venv/bin/python3 server.py
 Restart=always
 RestartSec=3
 
-# Ensure permissions to configure NPU devfreq clock
-AmbientCapabilities=CAP_SYS_ADMIN
+# Ensure permissions to configure NPU devfreq clock and un-gate hardware register
+AmbientCapabilities=CAP_SYS_ADMIN CAP_SYS_RAWIO
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_RAWIO
 
 [Install]
 WantedBy=multi-user.target
