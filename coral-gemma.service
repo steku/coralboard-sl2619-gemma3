@@ -1,0 +1,22 @@
+[Unit]
+Description=Gemma 3 Torq Coral NPU Server for Coralboard SL2619
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/root/coral-sl2619-gemma3
+Environment="PYTHONUNBUFFERED=1"
+Environment="HOST=0.0.0.0"
+Environment="PORT=8000"
+Environment="MAX_SEQ_LEN=1024"
+Environment="MAX_TOKENS=128"
+ExecStart=/home/root/coral-sl2619-gemma3/.venv/bin/python3 server.py
+Restart=always
+RestartSec=3
+
+# Ensure permissions to configure NPU devfreq clock
+AmbientCapabilities=CAP_SYS_ADMIN
+
+[Install]
+WantedBy=multi-user.target
